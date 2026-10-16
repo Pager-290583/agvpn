@@ -19,7 +19,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
         with:
           bundle: agvpn-${{ matrix.arch }}.flatpak
@@ -30,5 +30,40 @@ jobs:
   helper:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sh -n helper/agvpn-helper
+
+  release:
+    name: Publish release
+    if: github.event_name == 'push'
+    needs: [flatpak, helper]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: agvpn-*
+          merge-multiple: true
+          path: dist
+      - name: Rolling "latest" release (every push to main)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          ls -l dist
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest dist/*.flatpak \
+            --target "$GITHUB_SHA" --latest \
+            --title "AGVPN (latest build)" \
+            --notes "Automatic build of commit ${GITHUB_SHA::7}.
+          Install: flatpak install --user agvpn-x86_64.flatpak (ARM: agvpn-aarch64.flatpak)"
+      - name: Versioned release (tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.flatpak \
+            --title "AGVPN $GITHUB_REF_NAME" --generate-notes
