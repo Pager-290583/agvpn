@@ -1,0 +1,9 @@
+[Flatpak Ref]
+Name=io.github.agvpn.AGVPN
+Branch=master
+Title=AGVPN — unofficial AdGuard VPN client
+Url=@URL@/repo
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+SuggestRemoteName=agvpn
+Homepage=https://github.com/Pager-290583/agvpn

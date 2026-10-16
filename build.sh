@@ -2,7 +2,10 @@
 # Builds the Flatpak and installs it for the current user.
 #
 #   ./build.sh            build + install
-#   ./build.sh bundle     additionally create agvpn-<arch>.flatpak in this folder
+#
+# No single-file .flatpak bundle: bundles do not carry the extra-data metadata needed to
+# download the AdGuard VPN CLI, so they fail to install. Ready builds are published by CI
+# as a Flatpak repo on GitHub Pages instead (see ИНСТРУКЦИЯ.md).
 #
 # Build state (sources cache, build dir, local repo) lives in ~/.cache/agvpn-rs, so the
 # project folder (on Yandex Disk) stays small.
@@ -11,7 +14,6 @@ cd "$(dirname "$0")"
 
 MANIFEST=flatpak/io.github.agvpn.AGVPN.yml
 APP_ID=io.github.agvpn.AGVPN
-ARCH=$(flatpak --default-arch)
 CACHE="${AGVPN_BUILD_CACHE:-$HOME/.cache/agvpn-rs}"
 REPO="$CACHE/repo"
 mkdir -p "$CACHE"
@@ -41,9 +43,4 @@ else
 fi
 flatpak install --user -y --reinstall agvpn-rs "$APP_ID"
 
-if [ "${1:-}" = "bundle" ]; then
-    flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
-        "$REPO" "agvpn-$ARCH.flatpak" "$APP_ID"
-    echo "Bundle: agvpn-$ARCH.flatpak"
-fi
 echo "Run: flatpak run $APP_ID"

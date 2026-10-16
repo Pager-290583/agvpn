@@ -1,7 +1,7 @@
 # AGVPN — клиент AdGuard VPN для Linux (Flatpak, Rust)
 
 Нативное приложение на GTK 4 / libadwaita, повторяющее приложение **AdGuard VPN для macOS** (v2.10).
-Ставится одним файлом `.flatpak` на любой дистрибутив с Flatpak.
+Ставится одной командой на любой дистрибутив с Flatpak.
 
 Это переписанная на **Rust** (gtk4-rs + libadwaita-rs) версия прежнего Python-приложения AGVPN.
 App ID, формат настроек, статистики и данных CLI не изменились, поэтому новая версия ставится поверх
@@ -70,19 +70,24 @@ App ID, формат настроек, статистики и данных CLI 
 
 ## Установка
 
-### Готовый bundle
+### Готовая сборка (GitHub Pages)
+
+Каждый push в `main` собирает приложение для x86_64 и aarch64 и публикует Flatpak-репозиторий
+на https://pager-290583.github.io/agvpn/:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak install --user agvpn-x86_64.flatpak      # runtime GNOME 50 подтянется с Flathub
-flatpak run io.github.agvpn.AGVPN
+flatpak install --user https://pager-290583.github.io/agvpn/agvpn.flatpakref
+flatpak update                                   # получить новую сборку
 ```
+
+Одиночный файл `.flatpak` не публикуется: в bundle не попадают метаданные extra-data,
+и установка падает с «Extra data missing in detached metadata».
 
 ### Сборка локально
 
 ```sh
 ./build.sh           # собрать и установить для текущего пользователя
-./build.sh bundle    # плюс файл agvpn-<arch>.flatpak
 ```
 
 Сборка идёт в GNOME SDK 50 с расширением `org.freedesktop.Sdk.Extension.rust-stable`

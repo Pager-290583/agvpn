@@ -1,0 +1,5 @@
+[Flatpak Repo]
+Title=AGVPN
+Url=@URL@/repo
+Homepage=https://github.com/Pager-290583/agvpn
+Comment=Unofficial AdGuard VPN desktop client

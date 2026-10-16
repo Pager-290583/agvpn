@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGVPN</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fafafa; --fg:#1d1d1f; --muted:#6b6b70; --code:#ececef; --accent:#2a7d4f; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1c1c1e; --fg:#f2f2f4; --muted:#a0a0a8; --code:#2c2c30; --accent:#5cc28a; } }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.55 system-ui, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:32px 16px 48px; }
+  h1 { margin:0 0 4px; } p.sub { margin:0 0 24px; color:var(--muted); }
+  pre { background:var(--code); padding:12px 14px; border-radius:8px; overflow-x:auto; }
+  code { font:14px/1.5 ui-monospace, monospace; }
+  a { color:var(--accent); } .meta { color:var(--muted); font-size:14px; margin-top:32px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AGVPN</h1>
+  <p class="sub">Неофициальный графический клиент AdGuard VPN для Linux (Flatpak, x86_64 и aarch64).</p>
+
+  <h2>Установка</h2>
+  <pre><code>flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user @URL@/agvpn.flatpakref</code></pre>
+  <p>Или откройте <a href="agvpn.flatpakref">agvpn.flatpakref</a> в GNOME Software / KDE Discover.</p>
+
+  <h2>Обновление</h2>
+  <pre><code>flatpak update</code></pre>
+
+  <h2>Запуск и удаление</h2>
+  <pre><code>flatpak run io.github.agvpn.AGVPN
+flatpak uninstall --user io.github.agvpn.AGVPN</code></pre>
+
+  <p>Исходники и подробная инструкция: <a href="https://github.com/Pager-290583/agvpn">github.com/Pager-290583/agvpn</a>.</p>
+  <p class="meta">Сборка коммита @SHA@ · @DATE@</p>
+</main>
+</body>
+</html>
