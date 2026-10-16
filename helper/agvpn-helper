@@ -1,0 +1,278 @@
+#!/bin/sh
+# agvpn-helper — privileged operations for the AGVPN desktop app.
+#
+# Runs as root through pkexec or sudo. It only ever starts the official
+# adguardvpn-cli binary with a fixed set of arguments and manages the
+# nftables kill switch table, so it is safe to allow it without a password.
+#
+# Usage:
+#   agvpn-helper connect    --data DIR --cli PATH [--kill-switch [--allow-lan]] -- [-l LOCATION|-f] [-4|-6]
+#   agvpn-helper disconnect --data DIR --cli PATH
+#   agvpn-helper killswitch-on  --data DIR --cli PATH [--allow-lan]
+#   agvpn-helper killswitch-off [--data DIR --cli PATH]
+#   agvpn-helper install    --data DIR --cli PATH   (enables passwordless mode for the calling user)
+#   agvpn-helper uninstall  [--data DIR --cli PATH]
+
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+umask 022
+
+INSTALL_DIR=/usr/local/libexec/agvpn
+INSTALLED_HELPER="$INSTALL_DIR/agvpn-helper"
+INSTALLED_CLI="$INSTALL_DIR/adguardvpn-cli"
+POLKIT_RULE=/etc/polkit-1/rules.d/49-io.github.agvpn.AGVPN.rules
+SUDOERS_FILE=/etc/sudoers.d/io-github-agvpn
+NFT_TABLE=agvpn_killswitch
+
+die() {
+    echo "agvpn-helper: $*" >&2
+    exit 2
+}
+
+[ "$(id -u)" = 0 ] || die "must be run as root (via pkexec or sudo)"
+
+# ------------------------------------------------------------------ caller
+CALLER_UID="${PKEXEC_UID:-${SUDO_UID:-}}"
+[ -n "$CALLER_UID" ] || die "cannot determine the calling user"
+case "$CALLER_UID" in *[!0-9]*) die "bad uid" ;; esac
+
+passwd_field() {
+    # $1 = field number
+    if command -v getent >/dev/null 2>&1; then
+        getent passwd "$CALLER_UID" | cut -d: -f"$1"
+    else
+        awk -F: -v uid="$CALLER_UID" -v f="$1" '$3 == uid { print $f; exit }' /etc/passwd
+    fi
+}
+CALLER_USER=$(passwd_field 1)
+CALLER_GID=$(passwd_field 4)
+CALLER_HOME=$(passwd_field 6)
+[ -n "$CALLER_USER" ] && [ -n "$CALLER_HOME" ] || die "unknown user $CALLER_UID"
+CALLER_HOME=$(readlink -f "$CALLER_HOME")
+
+SELF=$(readlink -f "$0")
+is_installed_copy() { [ "$SELF" = "$INSTALLED_HELPER" ]; }
+
+# ------------------------------------------------------------------ args
+COMMAND="${1:-}"
+[ $# -gt 0 ] && shift
+DATA_DIR=""
+CLI_ARG=""
+KILL_SWITCH=0
+ALLOW_LAN=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --data) [ $# -ge 2 ] || die "--data needs a value"; DATA_DIR="$2"; shift 2 ;;
+        --cli) [ $# -ge 2 ] || die "--cli needs a value"; CLI_ARG="$2"; shift 2 ;;
+        --kill-switch) KILL_SWITCH=1; shift ;;
+        --allow-lan) ALLOW_LAN=1; shift ;;
+        --) shift; break ;;
+        *) die "unknown option: $1" ;;
+    esac
+done
+
+resolve_cli() {
+    if is_installed_copy; then
+        # Passwordless mode: never run a binary chosen by the caller.
+        CLI="$INSTALLED_CLI"
+    else
+        [ -n "$CLI_ARG" ] || die "--cli is required"
+        CLI=$(readlink -f "$CLI_ARG")
+    fi
+    [ -x "$CLI" ] || die "adguardvpn-cli not found: $CLI"
+}
+
+resolve_data_dir() {
+    [ -n "$DATA_DIR" ] || die "--data is required"
+    [ -d "$DATA_DIR" ] || die "data directory does not exist: $DATA_DIR"
+    DATA_DIR=$(readlink -f "$DATA_DIR")
+    case "$DATA_DIR" in
+        "$CALLER_HOME"/*) ;;
+        *) die "data directory must be inside $CALLER_HOME" ;;
+    esac
+    owner=$(stat -c %u "$DATA_DIR" 2>/dev/null || stat -f %u "$DATA_DIR")
+    [ "$owner" = "$CALLER_UID" ] || die "data directory must be owned by $CALLER_USER"
+}
+
+run_cli() {
+    env -i \
+        PATH="$PATH" \
+        HOME=/root \
+        LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+        TERM=dumb NO_COLOR=1 \
+        AGVPN_CLI_DATA_PATH="$DATA_DIR" \
+        SUDO_USER="$CALLER_USER" SUDO_UID="$CALLER_UID" SUDO_GID="$CALLER_GID" \
+        "$CLI" "$@"
+}
+
+fix_owner() {
+    # Files created by the root VPN service must stay readable/writable by the user.
+    # -execdir runs chown from inside each directory, so renaming a parent directory
+    # during the walk cannot redirect it outside the tree. Skips hard-linked files (never chown something linked from elsewhere) and the
+    # route script, which the CLI requires to stay root-owned.
+    find "$DATA_DIR" -xdev \( -user 0 -o -group 0 \) \( -type d -o -links 1 \) \
+        ! -name setup_routes.sh -execdir chown -h "$CALLER_UID:$CALLER_GID" {} + 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------ kill switch
+killswitch_off() {
+    if command -v nft >/dev/null 2>&1; then
+        nft list table inet "$NFT_TABLE" >/dev/null 2>&1 && nft delete table inet "$NFT_TABLE"
+    fi
+    return 0
+}
+
+killswitch_on() {
+    iface="$1"
+    case "$iface" in
+        ""|*[!A-Za-z0-9_.-]*) echo "Kill Switch: bad interface name: $iface" >&2; return 1 ;;
+    esac
+    if ! command -v nft >/dev/null 2>&1; then
+        echo "Kill Switch FAILED: nft (nftables) is required for Kill Switch" >&2
+        return 1
+    fi
+    lan=""
+    if [ "$ALLOW_LAN" = 1 ]; then
+        lan='
+        ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
+        ip6 daddr { fe80::/10, fc00::/7, ff00::/8 } accept'
+    fi
+    killswitch_off
+    nft -f - <<EOF
+table inet $NFT_TABLE {
+    chain output {
+        type filter hook output priority 0; policy drop;
+        oifname "lo" accept
+        oifname "$iface" accept
+        meta skuid 0 accept
+        udp dport { 67, 68, 546, 547 } accept
+        icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept$lan
+    }
+}
+EOF
+}
+
+tun_interface() {
+    run_cli status 2>/dev/null | sed -n 's/.*running on \([A-Za-z0-9_.-]*\).*/\1/p' | head -n 1
+}
+
+# ------------------------------------------------------------------ commands
+cmd_connect() {
+    resolve_cli
+    resolve_data_dir
+    LOCATION=""
+    args=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -l|--location)
+                LOCATION="${2:-}"
+                case "$LOCATION" in ""|-*|*[[:cntrl:]]*) die "bad location" ;; esac
+                [ ${#LOCATION} -le 100 ] || die "bad location"
+                shift 2
+                ;;
+            -f|--fastest) args="$args -f"; shift ;;
+            -4|--ipv4only) args="$args -4"; shift ;;
+            -6|--ipv6only) args="$args -6"; shift ;;
+            *) die "unsupported connect argument: $1" ;;
+        esac
+    done
+
+    # A kill switch left over from a dropped connection would block the CLI's own DNS
+    # lookups, so lift it while connecting and restore it if connecting fails.
+    saved_rules=""
+    if command -v nft >/dev/null 2>&1; then
+        saved_rules=$(nft list table inet "$NFT_TABLE" 2>/dev/null || true)
+    fi
+    killswitch_off
+
+    # shellcheck disable=SC2086
+    if [ -n "$LOCATION" ]; then
+        run_cli connect -y --no-progress -l "$LOCATION" $args
+    else
+        run_cli connect -y --no-progress $args
+    fi
+    rc=$?
+    fix_owner
+
+    if [ "$rc" = 0 ] && [ "$KILL_SWITCH" = 1 ]; then
+        iface=$(tun_interface)
+        if [ -n "$iface" ]; then
+            if killswitch_on "$iface"; then
+                echo "Kill Switch enabled for $iface"
+            else
+                echo "Kill Switch FAILED: could not install firewall rules" >&2
+            fi
+        else
+            echo "Kill Switch FAILED: could not detect the VPN interface" >&2
+        fi
+    elif [ "$rc" != 0 ] && [ -n "$saved_rules" ]; then
+        printf '%s\n' "$saved_rules" | nft -f - || true
+    fi
+    return "$rc"
+}
+
+cmd_disconnect() {
+    resolve_cli
+    resolve_data_dir
+    killswitch_off
+    run_cli disconnect
+    rc=$?
+    fix_owner
+    return "$rc"
+}
+
+cmd_install() {
+    resolve_cli
+    install -d -m 0755 -o root -g root "$INSTALL_DIR"
+    install -m 0755 -o root -g root "$SELF" "$INSTALLED_HELPER.tmp" && mv -f "$INSTALLED_HELPER.tmp" "$INSTALLED_HELPER"
+    install -m 0755 -o root -g root "$CLI" "$INSTALLED_CLI.tmp" && mv -f "$INSTALLED_CLI.tmp" "$INSTALLED_CLI"
+
+    if [ -d /etc/polkit-1/rules.d ] || [ -d /usr/share/polkit-1/rules.d ]; then
+        mkdir -p /etc/polkit-1/rules.d
+        cat > "$POLKIT_RULE" <<EOF
+// Installed by AGVPN: lets $CALLER_USER connect/disconnect AdGuard VPN without a password.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.policykit.exec" &&
+        action.lookup("program") == "$INSTALLED_HELPER" &&
+        subject.user == "$CALLER_USER") {
+        return polkit.Result.YES;
+    }
+});
+EOF
+        chmod 0644 "$POLKIT_RULE"
+    fi
+
+    if [ -d /etc/sudoers.d ] && command -v visudo >/dev/null 2>&1; then
+        tmp=$(mktemp)
+        printf '%s ALL=(root) NOPASSWD: %s\n' "$CALLER_USER" "$INSTALLED_HELPER" > "$tmp"
+        if visudo -cf "$tmp" >/dev/null 2>&1; then
+            install -m 0440 -o root -g root "$tmp" "$SUDOERS_FILE"
+        fi
+        rm -f "$tmp"
+    fi
+    echo "Installed to $INSTALL_DIR"
+}
+
+cmd_uninstall() {
+    rm -f "$POLKIT_RULE" "$SUDOERS_FILE"
+    rm -rf "$INSTALL_DIR"
+    echo "Removed"
+}
+
+case "$COMMAND" in
+    connect) cmd_connect "$@" ;;
+    disconnect) cmd_disconnect ;;
+    killswitch-on)
+        resolve_cli
+        resolve_data_dir
+        iface=$(tun_interface)
+        [ -n "$iface" ] || die "VPN is not connected in TUN mode"
+        killswitch_on "$iface" || die "Kill Switch FAILED: could not install firewall rules"
+        echo "Kill Switch enabled for $iface"
+        ;;
+    killswitch-off) killswitch_off; echo "Kill Switch disabled" ;;
+    install) cmd_install ;;
+    uninstall) cmd_uninstall ;;
+    *) die "unknown command: $COMMAND" ;;
+esac

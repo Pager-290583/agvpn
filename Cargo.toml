@@ -1,0 +1,38 @@
+[package]
+name = "agvpn"
+version = "1.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "Unofficial desktop client for AdGuard VPN on Linux"
+license = "MIT"
+publish = false
+default-run = "agvpn"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_6"] }
+async-channel = "2"
+libc = "0.2"
+log = { version = "0.4", features = ["std"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+idna = "1"
+ureq = { version = "3", features = ["json"] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[[bin]]
+name = "agvpn"
+path = "src/main.rs"
+
+[[bin]]
+name = "agvpn-apply-extra"
+path = "src/bin/apply_extra.rs"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

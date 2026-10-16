@@ -1,0 +1,8 @@
+/target/
+/.cargo-home/
+.flatpak-builder/
+build-dir/
+repo/
+*.flatpak
+build.log
+*.tar.gz

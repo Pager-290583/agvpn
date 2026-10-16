@@ -1,0 +1,83 @@
+app-id: io.github.agvpn.AGVPN
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: agvpn
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # A VPN needs the host network namespace, /dev/net/tun and root privileges, none of
+  # which exist inside the sandbox. adguardvpn-cli and pkexec are therefore started on
+  # the host through `flatpak-spawn --host`.
+  - --talk-name=org.freedesktop.Flatpak
+  # Tray icon (StatusNotifierItem protocol).
+  - --talk-name=org.kde.StatusNotifierWatcher
+
+modules:
+  - name: agvpn
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/agvpn/cargo
+        CARGO_NET_OFFLINE: 'true'
+    run-tests: true
+    test-commands:
+      - cargo test --release --locked --offline
+    build-commands:
+      - cargo build --release --locked --offline
+      - install -Dm755 target/release/agvpn /app/bin/agvpn
+      # Unpacks the CLI archive at install time (see the extra-data sources below).
+      - install -Dm755 target/release/agvpn-apply-extra /app/bin/apply_extra
+      - install -d /app/share/agvpn
+      - cp -r data /app/share/agvpn/data
+      - install -Dm755 helper/agvpn-helper /app/share/agvpn/helper/agvpn-helper
+      - install -Dm644 data/io.github.agvpn.AGVPN.desktop /app/share/applications/io.github.agvpn.AGVPN.desktop
+      - install -Dm644 data/io.github.agvpn.AGVPN.metainfo.xml /app/share/metainfo/io.github.agvpn.AGVPN.metainfo.xml
+      - install -Dm644 -t /app/share/icons/hicolor/scalable/apps data/icons/hicolor/scalable/apps/*.svg
+      - install -Dm644 -t /app/share/icons/hicolor/symbolic/apps data/icons/hicolor/symbolic/apps/*.svg
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - .cargo-home
+          - target
+          - .flatpak-builder
+          - build-dir
+          - repo
+          - '*.flatpak'
+          - '*.tar.gz'
+      # Rust dependencies, generated from Cargo.lock by flatpak/cargo-sources.py.
+      - cargo-sources.json
+
+      # The official AdGuard VPN CLI is proprietary and may not be redistributed, so it is
+      # downloaded from AdGuard's GitHub releases on the user's machine at install time.
+      - type: extra-data
+        filename: adguardvpn-cli.tar.gz
+        only-arches: [x86_64]
+        url: https://github.com/AdguardTeam/AdGuardVPNCLI/releases/download/v1.7.12-release/adguardvpn-cli-1.7.12-linux-x86_64.tar.gz
+        sha256: a706933c87ec88eec8578cce96d2b91c385e083cf738a806e69b3bcd877fb88c
+        size: 5933218
+        x-checker-data:
+          type: json
+          url: https://api.github.com/repos/AdguardTeam/AdGuardVPNCLI/releases/latest
+          version-query: .tag_name | sub("^v"; "") | sub("-release$"; "")
+          url-query: .assets[] | select(.name | endswith("linux-x86_64.tar.gz")) | .browser_download_url
+      - type: extra-data
+        filename: adguardvpn-cli.tar.gz
+        only-arches: [aarch64]
+        url: https://github.com/AdguardTeam/AdGuardVPNCLI/releases/download/v1.7.12-release/adguardvpn-cli-1.7.12-linux-aarch64.tar.gz
+        sha256: 872fcd81ec41f952001c567abd2e61564773ccdcf5be246afd047f3d3eb4ee0b
+        size: 5516790
+        x-checker-data:
+          type: json
+          url: https://api.github.com/repos/AdguardTeam/AdGuardVPNCLI/releases/latest
+          version-query: .tag_name | sub("^v"; "") | sub("-release$"; "")
+          url-query: .assets[] | select(.name | endswith("linux-aarch64.tar.gz")) | .browser_download_url

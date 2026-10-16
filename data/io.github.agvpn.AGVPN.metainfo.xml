@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.agvpn.AGVPN</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>AGVPN</name>
+  <summary>Unofficial desktop client for AdGuard VPN</summary>
+  <summary xml:lang="ru">Неофициальный графический клиент AdGuard VPN</summary>
+  <developer id="io.github.agvpn">
+    <name>AGVPN contributors</name>
+  </developer>
+  <description>
+    <p>
+      A native GTK 4 / libadwaita desktop app for AdGuard VPN on Linux, modelled on the
+      official macOS app. It controls the official AdGuard VPN CLI, which is downloaded from
+      AdGuard's GitHub releases during installation.
+    </p>
+    <ul>
+      <li>One-click connect, fastest and saved locations with ping</li>
+      <li>Website exclusions: General and Selective modes, popular services, subdomains, import and export</li>
+      <li>Kill Switch based on nftables</li>
+      <li>DNS servers: default, popular (AdGuard DNS, Cloudflare, Quad9…) and custom</li>
+      <li>VPN (TUN) and SOCKS5 modes, HTTP/2 or QUIC protocol, post-quantum cryptography</li>
+      <li>Usage stats, account and subscription info, tray icon and notifications</li>
+    </ul>
+    <p>This app is not affiliated with AdGuard. An AdGuard VPN account is required.</p>
+  </description>
+  <description xml:lang="ru">
+    <p>
+      Нативное приложение на GTK 4 / libadwaita для AdGuard VPN в Linux по образцу официального
+      приложения для macOS. Управляет официальным AdGuard VPN CLI, который скачивается из релизов
+      AdGuard на GitHub при установке.
+    </p>
+    <p>Приложение не связано с компанией AdGuard. Нужен аккаунт AdGuard VPN.</p>
+  </description>
+  <launchable type="desktop-id">io.github.agvpn.AGVPN.desktop</launchable>
+  <url type="homepage">https://adguard-vpn.com/</url>
+  <categories>
+    <category>Network</category>
+    <category>Security</category>
+  </categories>
+  <keywords>
+    <keyword>VPN</keyword>
+    <keyword>AdGuard</keyword>
+    <keyword>privacy</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <internet>always</internet>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.1.0" date="2026-10-16">
+      <description>
+        <p>The app was rewritten in Rust: faster start-up and lower memory use. Settings, stats and the signed-in account are kept.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-09-24">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>
