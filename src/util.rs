@@ -176,7 +176,7 @@ pub fn run_host(argv: &[String], env: &Env, timeout: Duration, stdin: Option<&st
 }
 
 /// Runs a local command with a timeout, merging stdout and stderr.
-fn run_command(cmd: &[String], extra_env: &Env, timeout: Duration, stdin: Option<&str>) -> CmdResult {
+pub(crate) fn run_command(cmd: &[String], extra_env: &Env, timeout: Duration, stdin: Option<&str>) -> CmdResult {
     let (reader, writer) = match std::io::pipe() {
         Ok(pair) => pair,
         Err(err) => return CmdResult::new(127, err.to_string()),

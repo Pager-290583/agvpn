@@ -75,6 +75,7 @@ pub fn find_cli() -> Option<String> {
 pub struct Cli {
     binary: RwLock<Option<String>>,
     version: RwLock<String>,
+    runner: fn(&[String], &Env, Duration, Option<&str>) -> CmdResult,
     pub data_dir: String,
     pub privileged: Privileged,
 }
@@ -86,6 +87,7 @@ impl Cli {
         let cli = Arc::new(Self {
             binary: RwLock::new(None),
             version: RwLock::new(String::new()),
+            runner: run_host,
             data_dir: path_str(&dir),
             privileged: Privileged::default(),
         });
@@ -143,7 +145,7 @@ impl Cli {
         }
         let mut argv = vec![self.host_binary()];
         argv.extend(cli_args.iter().map(|s| s.to_string()));
-        run_host(&argv, &self.env(), timeout, None)
+        (self.runner)(&argv, &self.env(), timeout, None)
     }
 
     fn run_owned(&self, cli_args: &[String], timeout: Duration) -> CmdResult {
@@ -673,6 +675,8 @@ mod tests {
             let cli = Cli {
                 binary: RwLock::new(Some(path_str(&binary))),
                 version: RwLock::new(String::new()),
+                // Test executables live inside the build sandbox, not on its host.
+                runner: crate::util::run_command,
                 data_dir: path_str(&dir),
                 privileged: Privileged::default(),
             };
