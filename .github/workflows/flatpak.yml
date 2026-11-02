@@ -25,13 +25,31 @@ jobs:
         arch: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v5
-      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+      - uses: actions/cache@v4
         with:
-          bundle: agvpn-${{ matrix.arch }}.flatpak
-          manifest-path: flatpak/io.github.agvpn.AGVPN.yml
-          arch: ${{ matrix.arch }}
-          cache-key: flatpak-builder-${{ matrix.arch }}-${{ github.sha }}
-          upload-artifact: false
+          path: .flatpak-builder
+          key: agvpn-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flatpak/cargo-sources.json') }}-${{ github.sha }}
+          restore-keys: |
+            agvpn-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'flatpak/cargo-sources.json') }}-
+      - name: Build and test Flatpak
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The image's system SDK is in an OverlayFS lower layer. Updating it can
+          # fail with EXDEV; install/update SDKs in a fresh writable user store.
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          dbus-run-session -- xvfb-run --auto-servernum flatpak-builder --user \
+            --repo=repo --disable-rofiles-fuse --install-deps-from=flathub \
+            --force-clean --keep-build-dirs --default-branch=master --arch=${{ matrix.arch }} \
+            flatpak_app flatpak/io.github.agvpn.AGVPN.yml \
+            2>&1 | tee "$RUNNER_TEMP/flatpak-${{ matrix.arch }}.log"
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: build-log-${{ matrix.arch }}
+          path: ${{ runner.temp }}/flatpak-${{ matrix.arch }}.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Pack OSTree repo
         shell: bash
         run: tar -cf ostree-${{ matrix.arch }}.tar repo
