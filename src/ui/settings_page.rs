@@ -367,6 +367,21 @@ impl SettingsTab {
                     if value.get("format").and_then(Value::as_str) != Some("agvpn-settings-1") {
                         return Err((false, "unknown format".to_string()));
                     }
+                    for key in ["app", "cli", "exclusions"] {
+                        if value.get(key).is_some_and(|v| !v.is_object()) {
+                            return Err((false, format!("Invalid settings section: {key}")));
+                        }
+                    }
+                    if let Some(app) = value.get("app").and_then(Value::as_object) {
+                        crate::settings::Settings::validate_import(app).map_err(|e| (false, e))?;
+                    }
+                    for mode in ["general", "selective"] {
+                        if let Some(items) = value.get("exclusions").and_then(|e| e.get(mode)) {
+                            if !items.as_array().is_some_and(|a| a.iter().all(Value::is_string)) {
+                                return Err((false, format!("Invalid exclusions: {mode}")));
+                            }
+                        }
+                    }
                     Ok(value)
                 });
             match parsed {
@@ -379,9 +394,7 @@ impl SettingsTab {
 
     fn apply_import(&self, data: &Value) {
         let ctl = &self.ui.ctl;
-        if let Some(Value::Object(app)) = data.get("app") {
-            ctl.settings.import(app);
-        }
+        let app = data.get("app").and_then(Value::as_object).cloned();
         let empty = json!({});
         let cli = data.get("cli").unwrap_or(&empty);
         let s = |key: &str| cli.get(key).and_then(Value::as_str).map(String::from);
@@ -396,7 +409,9 @@ impl SettingsTab {
         if let Some(host) = s("socks_host").filter(|h| !h.is_empty()) {
             commands.push(("set-socks-host", host));
         }
-        commands.push(("set-dns", s("dns").filter(|d| !d.is_empty()).unwrap_or_else(|| "default".into())));
+        if let Some(dns) = s("dns") {
+            commands.push(("set-dns", if dns.is_empty() { "default".into() } else { dns }));
+        }
         if let Some(protocol) = s("protocol").filter(|p| ["auto", "http2", "quic"].contains(&p.as_str())) {
             commands.push(("set-protocol", protocol));
         }
@@ -415,22 +430,20 @@ impl SettingsTab {
         if let Some(debug) = cli.get("debug_logging").and_then(Value::as_bool) {
             commands.push(("set-debug-logging", onoff(debug)));
         }
-        commands.push(("set-bound-if-override", s("bound_if").unwrap_or_default()));
-        for (key, value) in commands {
-            ctl.set_config_quiet(key, &[&value]);
+        if let Some(bound_if) = s("bound_if") {
+            commands.push(("set-bound-if-override", bound_if));
         }
         let excl = data.get("exclusions").unwrap_or(&empty);
+        let mut replacements = Vec::new();
         for mode in ["general", "selective"] {
             if let Some(items) = excl.get(mode).and_then(Value::as_array) {
                 let items = items.iter().map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string())).collect();
-                ctl.replace_exclusions(mode, items);
+                replacements.push((mode.to_string(), items));
             }
         }
-        if let Some(mode) = excl.get("mode").and_then(Value::as_str).filter(|m| *m == "general" || *m == "selective") {
-            ctl.set_exclusion_mode(mode);
-        }
-        crate::app::apply_theme(&ctl.settings);
-        self.ui.toast(&tr!("Settings imported"));
+        let mode = excl.get("mode").and_then(Value::as_str)
+            .filter(|m| *m == "general" || *m == "selective").map(String::from);
+        ctl.import_settings(app, commands.into_iter().map(|(key, value)| (key.to_string(), value)).collect(), replacements, mode);
     }
 
     fn reset(&self) {
@@ -1194,7 +1207,7 @@ impl AdvancedPage {
         run_in_thread(
             move || {
                 let installed = cli.privileged.is_installed(true);
-                (installed, installed && !cli.privileged.installed_cli_matches(&cli))
+                (installed, installed && !cli.privileged.installed_matches(&cli))
             },
             move |(installed, outdated)| {
                 if let Some(page) = weak.upgrade() {
@@ -1461,8 +1474,8 @@ fn build_logs_zip(cli: &crate::cli::Cli) -> Result<Vec<u8>, String> {
             Ok(data) if res.ok() => add("adguardvpn-cli-logs.zip", &data)?,
             _ => add("adguardvpn-cli-export-error.txt", res.out.as_bytes())?,
         }
-        if let Ok(data) = std::fs::read(cache_dir().join("agvpn.log")) {
-            add("agvpn-app.log", &data)?;
+        if let Ok(text) = std::fs::read_to_string(cache_dir().join("agvpn.log")) {
+            add("agvpn-app.log", crate::logger::diagnostic_log(&text).as_bytes())?;
         }
         let run = |args: &[&str]| cli.run(args, Duration::from_secs(60)).text();
         let os = read_os_release();

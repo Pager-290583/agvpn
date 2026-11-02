@@ -6,3 +6,4 @@ repo/
 *.flatpak
 build.log
 *.tar.gz
+__pycache__/

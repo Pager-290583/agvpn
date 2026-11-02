@@ -120,6 +120,7 @@ pub struct Controller {
     pub license: RefCell<License>,
     pub logged_in: Cell<Option<bool>>,
     license_at: Cell<f64>,
+    license_pending: Cell<bool>,
 
     pub config: RefCell<CliConfig>,
     pub exclusions: RefCell<Exclusions>,
@@ -149,6 +150,7 @@ impl Controller {
             license: RefCell::new(License::default()),
             logged_in: Cell::new(None),
             license_at: Cell::new(0.0),
+            license_pending: Cell::new(false),
             config: RefCell::new(CliConfig::default()),
             exclusions: RefCell::new(Exclusions { mode: "general".into(), general: Vec::new(), selective: Vec::new() }),
             poll_source: RefCell::new(None),
@@ -223,7 +225,7 @@ impl Controller {
         if logged_in && now - self.locations_at.get() > LOCATIONS_TTL && !self.locations_loading.get() {
             self.refresh_locations();
         }
-        if logged_in && now - self.license_at.get() > LICENSE_TTL {
+        if self.logged_in.get() != Some(false) && now - self.license_at.get() > LICENSE_TTL {
             self.refresh_license();
         }
     }
@@ -382,11 +384,17 @@ impl Controller {
                 if this.busy_token.get() == token {
                     this.busy.set(None);
                 }
+                // The helper may leave blocking rules after a failed connect.
+                if res.out.contains("Kill Switch enabled") {
+                    this.set_ks_active(true);
+                } else if res.out.contains("Kill Switch disabled") {
+                    this.set_ks_active(false);
+                }
                 if res.ok() {
                     if let Some(loc) = &location {
                         this.settings.set("last_location", loc.connect_arg());
                     }
-                    // The helper always lifts old rules before connecting; this reflects the new state.
+                    // Also recognize older installed helpers until they are updated.
                     let enabled = res.out.contains("Kill Switch enabled");
                     this.set_ks_active(enabled);
                     if requested_ks && !enabled {
@@ -405,7 +413,7 @@ impl Controller {
                         this.signals.error.emit((tr!("Kill Switch is not active"), message));
                     }
                 }
-                if !res.ok() && !matches!(st.state, State::Connected | State::Reconnecting) {
+                if !res.ok() {
                     let message = error_message(&res);
                     *this.last_error.borrow_mut() = message.clone();
                     if res.code != 126 {
@@ -435,7 +443,7 @@ impl Controller {
                 if this.busy_token.get() == token {
                     this.busy.set(None);
                 }
-                let ok = res.ok() || st.state == State::Disconnected;
+                let ok = res.ok();
                 if ok {
                     this.set_ks_active(false);
                 } else if res.code != 126 {
@@ -460,7 +468,7 @@ impl Controller {
 
     pub fn set_kill_switch(self: &Rc<Self>, enabled: bool) {
         self.settings.set("kill_switch", enabled);
-        if !self.is_connected() && !(!enabled && self.kill_switch_rules_present()) {
+        if !self.is_connected() && self.busy.get() != Some(State::Connecting) && !(!enabled && self.kill_switch_rules_present()) {
             return;
         }
         if enabled && self.config.borrow().mode != "tun" {
@@ -568,17 +576,33 @@ impl Controller {
     // ================================================================== account
 
     pub fn refresh_license(self: &Rc<Self>) {
+        if self.license_pending.replace(true) {
+            return;
+        }
         let cli = self.cli.clone();
         let this = self.clone();
         self.worker.submit(
             move || {
-                let mut lic = cli.license();
+                let mut lic = cli.license()?;
                 if lic.logged_in && lic.email.is_empty() {
                     lic.email = parsers::parse_email(&cli.run(&["status"], std::time::Duration::from_secs(20)).out);
                 }
-                lic
+                Ok(lic)
             },
-            move |lic| {
+            move |result: Result<License, CmdResult>| {
+                this.license_pending.set(false);
+                let lic = match result {
+                    Ok(lic) => lic,
+                    Err(res) => {
+                        // Preserve the last known account state and retry in 30s,
+                        // without queuing a new request on every 3s status poll.
+                        this.license_at.set(now_secs() - LICENSE_TTL + 30.0);
+                        if this.logged_in.get().is_none() {
+                            this.signals.error.emit((tr!("Account"), error_message(&res)));
+                        }
+                        return;
+                    }
+                };
                 this.license_at.set(now_secs());
                 this.logged_in.set(Some(lic.logged_in));
                 *this.license.borrow_mut() = lic;
@@ -595,21 +619,37 @@ impl Controller {
     }
 
     pub fn logout(self: &Rc<Self>) {
+        if self.busy.get().is_some() {
+            return;
+        }
         let cli = self.cli.clone();
-        let connected = self.is_connected();
+        let cleanup = self.is_connected() || self.kill_switch_rules_present();
+        self.busy.set(Some(State::Disconnecting));
+        self.user_disconnected.set(true);
+        self.signals.status_changed.emit(());
         let this = self.clone();
         self.worker.submit(
             move || {
-                if connected {
-                    cli.disconnect();
+                if cleanup {
+                    let res = cli.disconnect();
+                    if !res.ok() {
+                        return (res, cli.status(), false);
+                    }
                 }
                 let res = cli.logout();
-                (res, cli.status())
+                (res, cli.status(), cleanup)
             },
-            move |(_res, st)| {
-                this.set_ks_active(false);
-                this.locations.borrow_mut().clear();
-                this.set_logged_in(false);
+            move |(res, st, cleaned)| {
+                this.busy.set(None);
+                if cleaned {
+                    this.set_ks_active(false);
+                }
+                if res.ok() {
+                    this.locations.borrow_mut().clear();
+                    this.set_logged_in(false);
+                } else if res.code != 126 {
+                    this.signals.error.emit((tr!("Account"), error_message(&res)));
+                }
                 this.apply_status(st);
                 this.signals.locations_changed.emit(());
             },
@@ -804,15 +844,72 @@ impl Controller {
         self.exclusions_job(move |cli| cli.clear_exclusions(&mode), None, None);
     }
 
-    pub fn replace_exclusions(self: &Rc<Self>, mode: &str, items: Vec<String>) {
-        let mode = mode.to_string();
-        self.exclusions_job(
-            move |cli| {
-                cli.clear_exclusions(&mode);
-                if items.is_empty() { CmdResult::new(0, "") } else { cli.add_exclusions(&items, &mode) }
+    /// Apply an import as one queued job. Read configuration and exclusions once
+    /// at the end, rather than after every imported field.
+    pub fn import_settings(
+        self: &Rc<Self>,
+        app: Option<serde_json::Map<String, serde_json::Value>>,
+        commands: Vec<(String, String)>,
+        replacements: Vec<(String, Vec<String>)>,
+        mode: Option<String>,
+    ) {
+        let needs_reconnect = commands.iter().any(|(key, _)| RECONNECT_KEYS.contains(&key.as_str()));
+        let cli = self.cli.clone();
+        let this = self.clone();
+        self.worker.submit(
+            move || {
+                let mut failure = None;
+                for (key, value) in &commands {
+                    let res = cli.set_config(key, std::slice::from_ref(value));
+                    if !res.ok() || res.text().to_lowercase().contains("invalid") {
+                        failure = Some(res);
+                        break;
+                    }
+                }
+                if failure.is_none() {
+                    for (mode, items) in replacements {
+                        let res = cli.replace_exclusions(&mode, &items);
+                        if !res.ok() {
+                            failure = Some(res);
+                            break;
+                        }
+                    }
+                }
+                if failure.is_none() {
+                    if let Some(mode) = mode {
+                        let res = cli.set_exclusion_mode(&mode);
+                        if !res.ok() || res.text().to_lowercase().contains("invalid") {
+                            failure = Some(res);
+                        }
+                    }
+                }
+                (failure, cli.config(), cli.exclusion_mode(), cli.exclusions("general"), cli.exclusions("selective"))
             },
-            None,
-            None,
+            move |(failure, cfg, mode, general, selective)| {
+                *this.config.borrow_mut() = cfg;
+                *this.exclusions.borrow_mut() = Exclusions { mode, general, selective };
+                this.signals.config_changed.emit(());
+                this.signals.exclusions_changed.emit(());
+                if let Some(res) = failure {
+                    this.signals.error.emit((tr!("Failed to import settings"),
+                        tr!("Some settings may have changed. Check your settings before retrying.") + "\n" + &error_message(&res)));
+                    return;
+                }
+                if let Some(app) = app {
+                    this.settings.import(&app);
+                    if app.contains_key("autostart") {
+                        crate::system::set_autostart(this.settings.bool("autostart"));
+                    }
+                    crate::app::apply_theme(&this.settings);
+                    if app.contains_key("kill_switch") || app.contains_key("kill_switch_allow_lan") {
+                        this.set_kill_switch(this.settings.bool("kill_switch"));
+                    }
+                }
+                if this.is_connected() && needs_reconnect {
+                    this.signals.needs_reconnect.emit(());
+                }
+                this.signals.toast.emit(tr!("Settings imported"));
+            },
         );
     }
 }

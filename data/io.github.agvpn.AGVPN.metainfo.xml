@@ -54,6 +54,11 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.1.1" date="2026-11-02">
+      <description>
+        <p>Keep Kill Switch rules during reconnects, protect diagnostic credentials, and reduce duplicate CLI requests. Settings imports now report errors and restore exclusions if replacement fails. Older CLI versions remain available for queued operations.</p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-10-16">
       <description>
         <p>The app was rewritten in Rust: faster start-up and lower memory use. Settings, stats and the signed-in account are kept.</p>

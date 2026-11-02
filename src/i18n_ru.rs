@@ -2,6 +2,7 @@
 //! Plural entries are keyed `one|many` and hold three forms joined with `|`.
 
 pub static RU: &[(&str, &str)] = &[
+    ("Some settings may have changed. Check your settings before retrying.", "Часть настроек могла измениться. Проверьте настройки перед повторной попыткой."),
     ("Disconnected", "Отключено"),
     ("Connected", "Подключено"),
     ("Connecting…", "Подключение…"),

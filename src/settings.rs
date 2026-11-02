@@ -61,6 +61,22 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Reject malformed imports before any CLI settings or exclusion lists change.
+    pub fn validate_import(data: &Map<String, Value>) -> Result<(), String> {
+        let known = defaults();
+        for (key, value) in data {
+            if key == "kill_switch_active" {
+                continue;
+            }
+            if let Some(default) = known.get(key) {
+                if std::mem::discriminant(default) != std::mem::discriminant(value) {
+                    return Err(format!("Invalid setting type: {key}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn new() -> Self {
         let settings = Self {
             path: config_dir().join("settings.json"),
@@ -219,5 +235,17 @@ impl Settings {
         *self.data.borrow_mut() = fresh;
         self.save();
         self.changed.emit("*".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn import_rejects_string_booleans_before_side_effects() {
+        let mut data = serde_json::Map::new();
+        data.insert("kill_switch".into(), serde_json::json!("false"));
+        assert!(super::Settings::validate_import(&data).is_err());
+        data.insert("kill_switch".into(), serde_json::json!(false));
+        assert!(super::Settings::validate_import(&data).is_ok());
     }
 }

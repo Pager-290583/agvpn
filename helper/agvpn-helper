@@ -118,7 +118,9 @@ fix_owner() {
 # ------------------------------------------------------------------ kill switch
 killswitch_off() {
     if command -v nft >/dev/null 2>&1; then
-        nft list table inet "$NFT_TABLE" >/dev/null 2>&1 && nft delete table inet "$NFT_TABLE"
+        if nft list table inet "$NFT_TABLE" >/dev/null 2>&1; then
+            nft delete table inet "$NFT_TABLE" || return 1
+        fi
     fi
     return 0
 }
@@ -126,7 +128,7 @@ killswitch_off() {
 killswitch_on() {
     iface="$1"
     case "$iface" in
-        ""|*[!A-Za-z0-9_.-]*) echo "Kill Switch: bad interface name: $iface" >&2; return 1 ;;
+        *[!A-Za-z0-9_.-]*) echo "Kill Switch: bad interface name: $iface" >&2; return 1 ;;
     esac
     if ! command -v nft >/dev/null 2>&1; then
         echo "Kill Switch FAILED: nft (nftables) is required for Kill Switch" >&2
@@ -138,13 +140,23 @@ killswitch_on() {
         ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
         ip6 daddr { fe80::/10, fc00::/7, ff00::/8 } accept'
     fi
-    killswitch_off
+    # nft -f applies deletion and replacement in a single transaction. If the
+    # new rules are invalid, the existing table stays in place.
+    iface_rule=""
+    if [ -n "$iface" ]; then
+        iface_rule="oifname \"$iface\" accept"
+    fi
+    replace=""
+    if nft list table inet "$NFT_TABLE" >/dev/null 2>&1; then
+        replace="delete table inet $NFT_TABLE"
+    fi
     nft -f - <<EOF
+$replace
 table inet $NFT_TABLE {
     chain output {
         type filter hook output priority 0; policy drop;
         oifname "lo" accept
-        oifname "$iface" accept
+        $iface_rule
         meta skuid 0 accept
         udp dport { 67, 68, 546, 547 } accept
         icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept$lan
@@ -178,13 +190,15 @@ cmd_connect() {
         esac
     done
 
-    # A kill switch left over from a dropped connection would block the CLI's own DNS
-    # lookups, so lift it while connecting and restore it if connecting fails.
-    saved_rules=""
-    if command -v nft >/dev/null 2>&1; then
-        saved_rules=$(nft list table inet "$NFT_TABLE" 2>/dev/null || true)
+    if [ "$KILL_SWITCH" = 1 ]; then
+        # Block user traffic before starting the tunnel. The root CLI is already
+        # allowed by the rules, so its connection and DNS do not need an open gap.
+        killswitch_on "" || die "Kill Switch FAILED: could not protect the connection"
+        echo "Kill Switch enabled (blocking while connecting)"
+    else
+        killswitch_off || die "could not remove Kill Switch rules"
+        echo "Kill Switch disabled"
     fi
-    killswitch_off
 
     # shellcheck disable=SC2086
     if [ -n "$LOCATION" ]; then
@@ -202,12 +216,12 @@ cmd_connect() {
                 echo "Kill Switch enabled for $iface"
             else
                 echo "Kill Switch FAILED: could not install firewall rules" >&2
+                rc=1
             fi
         else
             echo "Kill Switch FAILED: could not detect the VPN interface" >&2
+            rc=1
         fi
-    elif [ "$rc" != 0 ] && [ -n "$saved_rules" ]; then
-        printf '%s\n' "$saved_rules" | nft -f - || true
     fi
     return "$rc"
 }
@@ -215,7 +229,7 @@ cmd_connect() {
 cmd_disconnect() {
     resolve_cli
     resolve_data_dir
-    killswitch_off
+    killswitch_off || die "could not remove Kill Switch rules"
     run_cli disconnect
     rc=$?
     fix_owner
@@ -271,7 +285,7 @@ case "$COMMAND" in
         killswitch_on "$iface" || die "Kill Switch FAILED: could not install firewall rules"
         echo "Kill Switch enabled for $iface"
         ;;
-    killswitch-off) killswitch_off; echo "Kill Switch disabled" ;;
+    killswitch-off) killswitch_off || die "could not remove Kill Switch rules"; echo "Kill Switch disabled" ;;
     install) cmd_install ;;
     uninstall) cmd_uninstall ;;
     *) die "unknown command: $COMMAND" ;;

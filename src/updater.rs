@@ -5,6 +5,7 @@
 
 use std::io::Read;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use regex::Regex;
@@ -15,6 +16,8 @@ use crate::cli::downloaded_cli_dir;
 use crate::consts::{CLI_NAME, CLI_REPO};
 use crate::parsers::version_tuple;
 use crate::util::set_mode;
+
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone)]
 pub struct Release {
@@ -92,6 +95,8 @@ pub fn latest_release(channel: &str) -> Result<Option<Release>, String> {
 
 /// Downloads, verifies and unpacks the release. Returns the path of the binary.
 pub fn install_release(rel: &Release) -> Result<String, String> {
+    // Automatic and manual downloads must not write the same temporary file.
+    let _guard = INSTALL_LOCK.lock().map_err(|_| "CLI installer is unavailable".to_string())?;
     let root = downloaded_cli_dir();
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let mut archive = Vec::new();
@@ -114,7 +119,8 @@ pub fn install_release(rel: &Release) -> Result<String, String> {
     if !extract_member(&archive, CLI_NAME, &target).map_err(|e| e.to_string())? {
         return Err("adguardvpn-cli not found in the archive".into());
     }
-    cleanup_old(&root, &rel.version);
+    // Queued CLI calls and the root helper may still use an older version. Keep it
+    // available until a future startup can safely decide which versions are unused.
     Ok(target.to_string_lossy().into_owned())
 }
 
@@ -139,14 +145,4 @@ pub fn extract_member(archive: &[u8], name: &str, target: &Path) -> std::io::Res
         return Ok(true);
     }
     Ok(false)
-}
-
-fn cleanup_old(root: &Path, keep: &str) {
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for entry in entries.flatten() {
-            if entry.file_name() != keep {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
 }

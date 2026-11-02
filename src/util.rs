@@ -170,7 +170,8 @@ pub fn send_signal(pid: u32, signal: i32) {
 /// Runs a command on the host and returns its exit code and combined stdout/stderr.
 pub fn run_host(argv: &[String], env: &Env, timeout: Duration, stdin: Option<&str>) -> CmdResult {
     let (cmd, extra_env) = host_argv(argv, env, false);
-    log::debug!("run: {}", cmd.join(" "));
+    // Log only the executable: CLI arguments and environment may contain credentials.
+    log::debug!("run: {}", argv.first().map(String::as_str).unwrap_or("<empty>"));
     run_command(&cmd, &extra_env, timeout, stdin)
 }
 
@@ -249,7 +250,13 @@ fn run_command(cmd: &[String], extra_env: &Env, timeout: Duration, stdin: Option
             };
             break status;
         }
-        let _ = rx.recv_timeout(Duration::from_millis(30)).map(|chunk| out.extend(chunk));
+        match rx.recv_timeout(Duration::from_millis(30)) {
+            Ok(chunk) => out.extend(chunk),
+            // A process may close stdout/stderr and keep running. A disconnected
+            // channel returns immediately; do not turn the wait into a busy loop.
+            Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
     };
     // Collect the rest of the output. A daemon started by the command may keep the pipe
     // open, so do not wait for EOF forever.
@@ -267,7 +274,7 @@ fn run_command(cmd: &[String], extra_env: &Env, timeout: Duration, stdin: Option
         return CmdResult::new(124, text);
     }
     let code = status.map(|s| exit_code(&s)).unwrap_or(1);
-    log::debug!("exit {code}: {}", text.trim().chars().take(500).collect::<String>());
+    log::debug!("exit {code}, {} output bytes", text.len());
     CmdResult::new(code, text)
 }
 
@@ -464,5 +471,13 @@ mod tests {
         assert!(res.out.contains("out") && res.out.contains("err"));
         let res = run_command(&args(&["sleep", "5"]), &Vec::new(), Duration::from_millis(200), None);
         assert_eq!(res.code, 124);
+    }
+
+    #[test]
+    fn timeout_still_works_after_output_is_closed() {
+        let res = run_command(&args(&["sh", "-c", "exec >/dev/null 2>&1; sleep 2"]), &Vec::new(),
+                              Duration::from_millis(100), None);
+        assert_eq!(res.code, 124);
+        assert!(res.out.contains("Timed out"));
     }
 }

@@ -414,7 +414,7 @@ impl App {
     fn check_helper_version(&self) {
         let cli = self.ctl.cli.clone();
         run_in_thread(
-            move || cli.available() && cli.privileged.is_installed(true) && !cli.privileged.installed_cli_matches(&cli),
+            move || cli.available() && cli.privileged.is_installed(true) && !cli.privileged.installed_matches(&cli),
             |outdated| {
                 let Some(this) = instance() else { return };
                 if outdated {

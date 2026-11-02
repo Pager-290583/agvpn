@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::LazyLock;
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -11,6 +12,25 @@ use crate::util::cache_dir;
 
 const MAX_BYTES: u64 = 1 << 20;
 const BACKUPS: u32 = 2;
+
+/// Old debug entries may contain command arguments and multi-line CLI output.
+/// Omit the entire entry, including continuation lines, from diagnostic exports.
+pub fn diagnostic_log(text: &str) -> String {
+    static ENTRY: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (ERROR|WARN|INFO|DEBUG|TRACE) ").unwrap()
+    });
+    let mut include = false;
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if let Some(caps) = ENTRY.captures(line) {
+            include = !matches!(&caps[1], "DEBUG" | "TRACE");
+        }
+        if include {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
 
 struct Logger {
     level: LevelFilter,
@@ -74,4 +94,17 @@ pub fn init() {
         log::set_max_level(level);
     }
     let _ = Level::Info;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn diagnostics_omit_old_debug_entries_and_continuations() {
+        let text = "orphaned secret\n2026-11-02 12:00:00 INFO agvpn: ready\n\
+            2026-11-02 12:00:01 DEBUG agvpn.cli: run: config set-socks-password fake-secret\n\
+            continuation-secret\n2026-11-02 12:00:02 WARN agvpn: network lost\n";
+        let clean = super::diagnostic_log(text);
+        assert!(clean.contains("ready") && clean.contains("network lost"));
+        assert!(!clean.contains("secret") && !clean.contains("DEBUG"));
+    }
 }

@@ -157,8 +157,17 @@ impl Cli {
         parsers::parse_status(&self.run(&["status"], secs(20)).out)
     }
 
-    pub fn license(&self) -> License {
-        parsers::parse_license(&self.run(&["license"], secs(40)).out)
+    pub fn license(&self) -> Result<License, CmdResult> {
+        let res = self.run(&["license"], secs(40));
+        if !res.ok() {
+            return Err(res);
+        }
+        let lic = parsers::parse_license(&res.out);
+        let low = res.text().to_lowercase();
+        if !lic.logged_in && !low.contains("please log in") && !low.contains("not logged in") {
+            return Err(CmdResult::new(1, res.out));
+        }
+        Ok(lic)
     }
 
     pub fn locations(&self) -> (Vec<Location>, CmdResult) {
@@ -205,6 +214,39 @@ impl Cli {
 
     pub fn clear_exclusions(&self, mode: &str) -> CmdResult {
         self.run(&["site-exclusions", "clear", "--for-mode", mode], secs(60))
+    }
+
+    /// Preserve the original list if the replacement fails after clearing it.
+    pub fn replace_exclusions(&self, mode: &str, items: &[String]) -> CmdResult {
+        let original = self.run(&["site-exclusions", "show", "--for-mode", mode], secs(60));
+        if !original.ok() {
+            return original;
+        }
+        let (reported_mode, previous) = parsers::parse_exclusions(&original.out);
+        if reported_mode != mode {
+            return CmdResult::new(1, "Could not read the existing exclusions; nothing was changed");
+        }
+        let cleared = self.clear_exclusions(mode);
+        if !cleared.ok() || cleared.text().to_lowercase().contains("invalid") {
+            return CmdResult::new(1, cleared.out);
+        }
+        if items.is_empty() {
+            return cleared;
+        }
+        let added = self.add_exclusions(items, mode);
+        if added.ok() && !added.text().to_lowercase().contains("invalid") {
+            return added;
+        }
+        // A failed add may have added only part of the list. Clear it before rollback.
+        let reset = self.clear_exclusions(mode);
+        let restored = if reset.ok() && !reset.text().to_lowercase().contains("invalid") {
+            if previous.is_empty() { reset } else { self.add_exclusions(&previous, mode) }
+        } else {
+            reset
+        };
+        let restored_ok = restored.ok() && !restored.text().to_lowercase().contains("invalid");
+        let message = if restored_ok { "Original exclusions restored" } else { "Could not restore original exclusions" };
+        CmdResult::new(1, format!("{}\n{message}", added.text()))
     }
 
     pub fn logout(&self) -> CmdResult {
@@ -286,7 +328,7 @@ fn open_pty() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut master: libc::c_int = -1;
     let mut slave: libc::c_int = -1;
     let rc = unsafe {
-        libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null())
+        libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
     };
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
@@ -405,12 +447,13 @@ impl Privileged {
         cached.unwrap_or(false)
     }
 
-    /// Whether the installed helper's CLI copy is identical to the one the app uses.
-    pub fn installed_cli_matches(&self, cli: &Cli) -> bool {
+    /// Both the CLI and the privileged script must match the app's current copies.
+    pub fn installed_matches(&self, cli: &Cli) -> bool {
         if !self.is_installed(false) || !cli.available() {
             return false;
         }
         run_host(&args(&["cmp", "-s", HOST_HELPER_CLI, &cli.host_binary()]), &Vec::new(), secs(20), None).ok()
+            && run_host(&args(&["cmp", "-s", HOST_HELPER, &self.bundled_helper()]), &Vec::new(), secs(20), None).ok()
     }
 
     fn common_args(cli: &Cli) -> Vec<String> {
@@ -605,4 +648,96 @@ fn ask(provider: Option<&async_channel::Sender<PasswordRequest>>, prompt: &str) 
     let (tx, rx) = async_channel::bounded(1);
     provider.send_blocking((prompt.to_string(), tx)).ok()?;
     rx.recv_blocking().ok().flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    struct MockCli {
+        cli: Cli,
+        dir: PathBuf,
+    }
+
+    impl MockCli {
+        fn new(body: &str) -> Self {
+            let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!("agvpn-cli-test-{}-{nonce}-{id}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            let binary = dir.join("mock-cli");
+            std::fs::write(&binary, format!("#!/bin/sh\ncd \"$(dirname \"$0\")\"\nprintf '%s\\n' \"$*\" >> calls\n{body}\n")).unwrap();
+            set_mode(&binary, 0o700);
+            let cli = Cli {
+                binary: RwLock::new(Some(path_str(&binary))),
+                version: RwLock::new(String::new()),
+                data_dir: path_str(&dir),
+                privileged: Privileged::default(),
+            };
+            Self { cli, dir }
+        }
+    }
+
+    impl Drop for MockCli {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[test]
+    fn license_preserves_command_errors() {
+        let mock = MockCli::new("echo 'You are using the PREMIUM version'; exit 1");
+        assert!(mock.cli.license().is_err());
+        let mock = MockCli::new("echo 'Failed to connect to backend'");
+        assert!(mock.cli.license().is_err());
+        let mock = MockCli::new("echo 'Please log in to view your license info'");
+        assert!(!mock.cli.license().unwrap().logged_in);
+    }
+
+    #[test]
+    fn exclusions_restore_original_after_partial_add() {
+        let mock = MockCli::new(r#"
+case "$2" in
+    show) echo 'Exclusions for GENERAL mode:'; cat state ;;
+    clear) : > state ;;
+    add)
+        if [ "$3" = bad.test ]; then
+            echo partial.test > state
+            echo 'Invalid exclusion'; exit 1
+        fi
+        printf '%s\n' "$3" > state
+        ;;
+esac
+"#);
+        std::fs::write(mock.dir.join("state"), "original.test\n").unwrap();
+        let res = mock.cli.replace_exclusions("general", &["bad.test".into()]);
+        assert!(!res.ok());
+        assert!(res.out.contains("Original exclusions restored"));
+        assert_eq!(std::fs::read_to_string(mock.dir.join("state")).unwrap(), "original.test\n");
+    }
+
+    #[test]
+    fn exclusions_do_not_add_after_failed_clear() {
+        let mock = MockCli::new(r#"
+case "$2" in
+    show) echo 'Exclusions for GENERAL mode:'; echo original.test ;;
+    clear) echo 'Invalid mode' ;;
+    add) exit 99 ;;
+esac
+"#);
+        assert!(!mock.cli.replace_exclusions("general", &["new.test".into()]).ok());
+        let calls = std::fs::read_to_string(mock.dir.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 2);
+        assert!(!calls.contains("add"));
+    }
+
+    #[test]
+    fn exclusions_do_not_clear_unrecognized_snapshot() {
+        let mock = MockCli::new("echo 'Unexpected backend response'");
+        assert!(!mock.cli.replace_exclusions("general", &["new.test".into()]).ok());
+        let calls = std::fs::read_to_string(mock.dir.join("calls")).unwrap();
+        assert_eq!(calls.lines().count(), 1);
+    }
 }

@@ -249,7 +249,9 @@ pub fn parse_license(output: &str) -> License {
     if low.contains("please log in") || low.contains("not logged in") {
         return lic;
     }
-    lic.logged_in = true;
+    // A backend error or empty output is not evidence of an authenticated session.
+    lic.logged_in = EMAIL_RE.is_match(&text) || PLAN.is_match(&text)
+        || low.contains("out of free vpn traffic");
     if let Some(c) = EMAIL_RE.captures(&text) {
         lic.email = c[1].to_string();
     }
@@ -545,6 +547,13 @@ mod tests {
         assert!((lic.traffic_left_gb.unwrap() - 2.47).abs() < 1e-9);
         assert!(parse_license("You are out of free VPN traffic this month. VPN speed is limited").traffic_exhausted);
         assert!(!parse_license("Please log in to view your license info").logged_in);
+    }
+
+    #[test]
+    fn license_errors_are_not_authenticated() {
+        for output in ["", "Timed out", "Failed to connect to backend", "Session has expired"] {
+            assert!(!parse_license(output).logged_in, "{output}");
+        }
     }
 
     #[test]
