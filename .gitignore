@@ -7,3 +7,5 @@ repo/
 build.log
 *.tar.gz
 __pycache__/
+/release-assets/
+/published-installers/

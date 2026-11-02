@@ -1,7 +1,7 @@
 name: Flatpak
 
 # Every push to main builds the app for x86_64 and aarch64 and publishes a Flatpak
-# repository on GitHub Pages:
+# repository on GitHub Pages, then installer files in GitHub Releases:
 #   flatpak install --user https://pager-290583.github.io/agvpn/agvpn.flatpakref
 # (A single-file .flatpak bundle cannot be used: bundles do not carry the extra-data
 # metadata needed to download the AdGuard VPN CLI at install time.)
@@ -115,6 +115,14 @@ jobs:
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
+      - uses: actions/upload-artifact@v5
+        with:
+          name: published-installers
+          path: |
+            site/agvpn.flatpakref
+            site/agvpn.flatpakrepo
+          if-no-files-found: error
+          retention-days: 7
 
   pages:
     name: Publish to GitHub Pages
@@ -132,3 +140,34 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v4
+
+  release:
+    name: Publish installer release
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: pages
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: published-installers
+          path: published-installers
+      - name: Prepare installer files and release notes
+        id: prepare
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          BUILD_ID: ${{ github.run_id }}
+        run: |
+          python3 scripts/prepare-release.py --site-dir published-installers \
+            --output-dir release-assets --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" --run-number "$BUILD_NUMBER" --run-id "$BUILD_ID" \
+            >> "$GITHUB_OUTPUT"
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.prepare.outputs.title }}
+        run: bash scripts/publish-release.sh "$RELEASE_TAG" "$RELEASE_TITLE" release-assets

@@ -87,10 +87,18 @@ App ID, формат настроек, статистики и данных CLI 
 
 ## Установка
 
-### Готовая сборка (GitHub Pages)
+### Готовая сборка (GitHub Releases / Pages)
 
 Каждый push в `main` собирает приложение для x86_64 и aarch64 и публикует Flatpak-репозиторий
-на https://pager-290583.github.io/agvpn/:
+на https://pager-290583.github.io/agvpn/.
+
+После успешной сборки и публикации репозитория установочные файлы автоматически
+появляются в [GitHub Releases](https://github.com/Pager-290583/agvpn/releases/latest).
+Скачайте `agvpn.flatpakref` из **Assets** и откройте его в GNOME Software / KDE Discover.
+Архитектура выбирается автоматически. Релиз также содержит `INSTALL.txt`, файл
+`agvpn.flatpakrepo`, сведения о сборке и контрольные суммы `SHA256SUMS`.
+Релизы имеют метки `v<версия>-build.<номер сборки>`; повторный запуск той же сборки
+обновляет её файлы. Установщик подключает репозиторий с актуальными обновлениями.
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
